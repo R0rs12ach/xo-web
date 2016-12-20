@@ -1,12 +1,20 @@
 import ChartistGraph from 'react-chartist'
 import ChartistLegend from 'chartist-plugin-legend'
 import ChartistTooltip from 'chartist-plugin-tooltip'
-import map from 'lodash/map'
 import React from 'react'
-import size from 'lodash/size'
-import values from 'lodash/values'
 import { injectIntl } from 'react-intl'
-import find from 'lodash/find'
+import { messages } from 'intl'
+import {
+  find,
+  flatten,
+  floor,
+  get,
+  map,
+  max,
+  size,
+  sum,
+  values
+} from 'lodash'
 
 import propTypes from '../prop-types'
 import { computeArraysSum } from '../xo-stats'
@@ -53,7 +61,7 @@ const makeOptions = ({ intl, nValues, endTimestamp, interval, valueTransform }) 
 // ===================================================================
 
 const makeLabelInterpolationFnc = (intl, nValues, endTimestamp, interval) => {
-  const labelSpace = Math.floor(nValues / N_LABELS_X)
+  const labelSpace = floor(nValues / N_LABELS_X)
   let format
 
   if (interval === 3600) {
@@ -111,7 +119,7 @@ const templateError =
     No stats.
   </div>
 
-// ===================================================================
+// =============================================================================
 
 export const CpuLineChart = injectIntl(propTypes({
   addSumSeries: propTypes.bool,
@@ -150,9 +158,61 @@ export const CpuLineChart = injectIntl(propTypes({
           nValues: length,
           endTimestamp: data.endTimestamp,
           interval: data.interval,
-          valueTransform: value => `${value}%`
+          valueTransform: value => `${floor(value)}%`
         }),
         high: !addSumSeries ? 100 : stats.length * 100,
+        ...options
+      }}
+    />
+  )
+}))
+
+export const PoolCpuLineChart = injectIntl(propTypes({
+  addSumSeries: propTypes.bool,
+  data: propTypes.object.isRequired,
+  options: propTypes.object
+})(({ addSumSeries, data, options = {}, intl }) => {
+  const hostsData = map(data, ({ stats, ...otherData }) => ({
+    cpuStats: computeArraysSum(stats.cpus),
+    ...otherData
+  }))
+  const firstHostData = hostsData[0]
+  const length = get(firstHostData, 'cpuStats.length')
+
+  if (!length) {
+    return templateError
+  }
+
+  const series = map(hostsData, ({ host, cpuStats }) => ({
+    name: host,
+    data: cpuStats
+  }))
+
+  if (addSumSeries) {
+    series.push({
+      name: intl.formatMessage(messages.poolAllHosts),
+      data: computeArraysSum(map(hostsData, 'cpuStats')),
+      className: styles.dashedLine
+    })
+  }
+
+  const nbCpusByHost = map(data, ({ stats }) => stats.cpus.length)
+
+  return (
+    <ChartistGraph
+      type='Line'
+      data={{
+        series
+      }}
+      options={{
+        ...makeOptions({
+          intl,
+          nValues: length,
+          endTimestamp: firstHostData.endTimestamp,
+          interval: firstHostData.interval,
+          valueTransform: value => `${floor(value)}%`
+        }),
+        high: 100 * (addSumSeries ? sum(nbCpusByHost) : max(nbCpusByHost)),
         ...options
       }}
     />
@@ -190,6 +250,53 @@ export const MemoryLineChart = injectIntl(propTypes({
           valueTransform: formatSize
         }),
         high: memory[memory.length - 1],
+        ...options
+      }}
+    />
+  )
+}))
+
+export const PoolMemoryLineChart = injectIntl(propTypes({
+  addSumSeries: propTypes.bool,
+  data: propTypes.object.isRequired,
+  options: propTypes.object
+})(({ addSumSeries, data: hostsData, options = {}, intl }) => {
+  const firstHostData = hostsData[0]
+
+  if (!get(firstHostData, 'stats.memory') || !get(firstHostData, 'stats.memoryUsed')) {
+    return templateError
+  }
+
+  const series = map(hostsData, ({ host, stats }) => ({
+    name: host,
+    data: stats.memoryUsed
+  }))
+
+  if (addSumSeries) {
+    series.push({
+      name: intl.formatMessage(messages.poolAllHosts),
+      data: computeArraysSum(map(hostsData, 'stats.memoryUsed')),
+      className: styles.dashedLine
+    })
+  }
+
+  const currentMemoryByHost = map(hostsData, ({ stats }) => stats.memory[stats.memory.length - 1])
+
+  return (
+    <ChartistGraph
+      type='Line'
+      data={{
+        series
+      }}
+      options={{
+        ...makeOptions({
+          intl,
+          nValues: firstHostData.stats.memoryUsed.length,
+          endTimestamp: firstHostData.endTimestamp,
+          interval: firstHostData.interval,
+          valueTransform: formatSize
+        }),
+        high: addSumSeries ? sum(currentMemoryByHost) : max(currentMemoryByHost),
         ...options
       }}
     />
@@ -292,6 +399,56 @@ export const PifLineChart = injectIntl(propTypes({
   )
 }))
 
+const ios = ['rx', 'tx']
+export const PoolPifLineChart = injectIntl(propTypes({
+  addSumSeries: propTypes.bool,
+  data: propTypes.object.isRequired,
+  options: propTypes.object
+})(({ addSumSeries, data, options = {}, intl }) => {
+  const hostsData = map(data, ({ stats, ...otherData }) => ({
+    rx: stats.pifs.rx,
+    tx: stats.pifs.tx,
+    ...otherData
+  }))
+  const firstHostData = hostsData[0]
+  const length = get(firstHostData, 'rx[0].length')
+
+  if (!length) {
+    return templateError
+  }
+
+  const series = addSumSeries
+    ? map(ios, io => ({
+      name: `${intl.formatMessage(messages.poolAllHosts)} (${io})`,
+      data: computeArraysSum(map(hostsData, ({ [io]: ioData }) => computeArraysSum(ioData)))
+    }))
+    : flatten(map(hostsData, ({ rx, tx, host }) =>
+      map(ios, io => ({
+        name: `${host} (${io})`,
+        data: computeArraysSum(eval(io)) // eslint-disable-line no-eval
+      }))
+    ))
+
+  return (
+    <ChartistGraph
+      type='Line'
+      data={{
+        series
+      }}
+      options={{
+        ...makeOptions({
+          intl,
+          nValues: length,
+          endTimestamp: firstHostData.endTimestamp,
+          interval: firstHostData.interval,
+          valueTransform: formatSize
+        }),
+        ...options
+      }}
+    />
+  )
+}))
+
 export const LoadLineChart = injectIntl(propTypes({
   data: propTypes.object.isRequired,
   options: propTypes.object
@@ -318,6 +475,51 @@ export const LoadLineChart = injectIntl(propTypes({
           nValues: length,
           endTimestamp: data.endTimestamp,
           interval: data.interval,
+          valueTransform: value => `${value.toPrecision(3)}`
+        }),
+        ...options
+      }}
+    />
+  )
+}))
+
+export const PoolLoadLineChart = injectIntl(propTypes({
+  addSumSeries: propTypes.bool,
+  data: propTypes.object.isRequired,
+  options: propTypes.object
+})(({ addSumSeries, data: hostsData, options = {}, intl }) => {
+  const firstHostData = hostsData[0]
+  const length = get(firstHostData, 'stats.load.length')
+
+  if (!length) {
+    return templateError
+  }
+
+  const series = map(hostsData, ({ host, stats }) => ({
+    name: host,
+    data: stats.load
+  }))
+
+  if (addSumSeries) {
+    series.push({
+      name: intl.formatMessage(messages.poolAllHosts),
+      data: computeArraysSum(map(hostsData, 'stats.load')),
+      className: styles.dashedLine
+    })
+  }
+
+  return (
+    <ChartistGraph
+      type='Line'
+      data={{
+        series
+      }}
+      options={{
+        ...makeOptions({
+          intl,
+          nValues: length,
+          endTimestamp: firstHostData.endTimestamp,
+          interval: firstHostData.interval,
           valueTransform: value => `${value.toPrecision(3)}`
         }),
         ...options
